@@ -3,7 +3,7 @@
 import threading
 import webbrowser
 import json
-from urllib.request import urlopen
+import urllib.request
 import gi
 
 gi.require_version('AppIndicator3', '0.1')
@@ -14,7 +14,7 @@ from gi.repository import GLib, Gio, Notify, GdkPixbuf  # noqa: E402
 from gi.repository import Gtk as gtk  # noqa: E402
 
 TWITCH_BASE_URL = 'https://www.twitch.tv/'
-TWITCH_API_URL = 'https://api.twitch.tv/kraken/'
+TWITCH_API_URL = 'https://api.twitch.tv/helix/'
 DEFAULT_AVATAR = ('http://static-cdn.jtvnw.net/'
                   'jtv_user_pictures/xarth/404_user_150x150.png')
 CLIENT_ID = 'oe77z9pq798tln7ngil0exwr0mun4hj'
@@ -28,10 +28,18 @@ class Twitch:
         try:
             self.followed_channels = []
 
-            self.f = urlopen(
-                f'{TWITCH_API_URL}users/{username}/follows/channels'
-                f'?client_id={CLIENT_ID}&direction=DESC'
-                '&limit=100&offset=0&sortby=created_at')
+            self.req = urllib.request.Request(
+                f'{TWITCH_API_URL}users?login={username}')
+            self.req.add_header('Client-ID', CLIENT_ID)
+            self.f = urllib.request.urlopen(self.req)
+            self.data = json.loads(self.f.read())
+
+            self.req = urllib.request.Request(
+                f'{TWITCH_API_URL}users/follows'
+                f'?from_id={self.data["data"][0]["id"]}')
+            #    f'&first=100')
+            self.req.add_header('Client-ID', CLIENT_ID)
+            self.f = urllib.request.urlopen(self.req)
             self.data = json.loads(self.f.read())
 
             # Return 404 if user does not exist
@@ -41,17 +49,19 @@ class Twitch:
             except KeyError:
                 pass
 
-            self.pages = int((self.data['_total'] - 1) / 100)
+            self.pages = int((self.data['total'] - 1) / 100)
             for page in range(self.pages + 1):
                 if page != 0:
-                    self.f = urlopen(
-                        f'{TWITCH_API_URL}users/{username}/follows/channels'
-                        f'?client_id={CLIENT_ID}&direction=DESC&limit=100&'
-                        f'offset={page * 100}&sortby=created_at')
+                    self.req = urllib.request.Request(
+                        f'{TWITCH_API_URL}users/follows?from_id={username}'
+                        f'&client_id={CLIENT_ID}&first=100'
+                        f'&after={self.data["cursor"]}')
+                    self.req.add_header('Client-ID', CLIENT_ID)
+                    self.f = urllib.request.urlopen(self.req)
                     self.data = json.loads(self.f.read())
 
-                for channel in self.data['follows']:
-                    self.followed_channels.append(channel['channel']['name'])
+                for channel in self.data['data']:
+                    self.followed_channels.append(channel['to_name'])
 
             return self.followed_channels
         except IOError:
@@ -72,36 +82,49 @@ class Twitch:
                     self.offset = self.channels_count
                 self.channels_offset = channels[(page * 75):self.offset]
 
-                self.f = urlopen(
-                    f'{TWITCH_API_URL}streams?client_id={CLIENT_ID}'
-                    f'&channel={",".join(self.channels_offset)}')
+                self.req = urllib.request.Request(
+                    f'{TWITCH_API_URL}streams'
+                    f'?user_login={"&user_login=".join(self.channels_offset)}')
+                self.req.add_header('Client-ID', CLIENT_ID)
+                self.f = urllib.request.urlopen(self.req)
                 self.data = json.loads(self.f.read())
 
-                for stream in self.data['streams']:
+                for stream in self.data['data']:
                     # For some reason sometimes stream status and game is not
                     # present in twitch API.
                     try:
-                        self.status = stream['channel']['status']
+                        self.status = stream['title']
                     except KeyError:
                         self.status = ''
 
                     # Show default if channel owner has not set his avatar
-                    if stream['channel']['logo'] is None:
-                        self.response = urlopen(DEFAULT_AVATAR)
+                    req = urllib.request.Request(
+                        f'{TWITCH_API_URL}users?login={stream["user_name"]}')
+                    req.add_header('Client-ID', CLIENT_ID)
+                    f = urllib.request.urlopen(req)
+                    dataimg = json.loads(f.read())
+                    img = dataimg['data'][0]['profile_image_url']
+                    if img is None:
+                        self.response = urllib.request.urlopen(DEFAULT_AVATAR)
                     else:
-                        self.response = urlopen(stream['channel']['logo'])
+                        self.response = urllib.request.urlopen(img)
                     self.loader = GdkPixbuf.PixbufLoader.new()
                     self.loader.set_size(32, 32)
                     self.loader.write(self.response.read())
                     self.loader.close()
 
+                    req = urllib.request.Request(
+                        f'{TWITCH_API_URL}games?id={stream["game_id"]}')
+                    req.add_header('Client-ID', CLIENT_ID)
+                    f = urllib.request.urlopen(req)
+                    datagame = json.loads(f.read())
                     st = {
-                        'name': stream['channel']['display_name'],
-                        'game': stream['channel']['game'],
+                        'name': stream['user_name'],
+                        'game': datagame['data'][0]['name'],
                         'status': self.status,
-                        'image': stream['channel']['logo'],
+                        'image': img,
                         'pixbuf': self.loader,
-                        'url': f"{TWITCH_BASE_URL}{stream['channel']['name']}"
+                        'url': f"{TWITCH_BASE_URL}{stream['user_name']}"
                     }
 
                     self.live_streams.append(st)
@@ -360,9 +383,9 @@ class Indicator():
                 self.image = gtk.Image()
                 # Show default if channel owner has not set his avatar
                 if stream['image'] is None:
-                    self.response = urlopen(DEFAULT_AVATAR)
+                    self.response = urllib.request.urlopen(DEFAULT_AVATAR)
                 else:
-                    self.response = urlopen(stream['image'])
+                    self.response = urllib.request.urlopen(stream['image'])
                 self.loader = GdkPixbuf.PixbufLoader.new()
                 self.loader.write(self.response.read())
                 self.loader.close()
