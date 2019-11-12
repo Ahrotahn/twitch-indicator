@@ -326,6 +326,12 @@ class Indicator():
         # Re-enable "Check now" button
         GLib.idle_add(self.enable_menu)
 
+        # Don't count the initial list
+        if hasattr(self, 'notify_list'):
+            initial = False
+        else:
+            initial = True
+
         # Check which streams were not live before, create separate list for
         # notifications and update main livestreams list.
         # We check live streams by URL, because sometimes Twitch API does not
@@ -343,7 +349,7 @@ class Indicator():
         self.LIVE_STREAMS = self.live_streams
 
         # Push notifications of new streams
-        if (self.settings.get_boolean('enable-notifications')):
+        if (self.settings.get_boolean('enable-notifications') and not initial):
             self.push_notifications(self.notify_list)
 
     def abort_refresh(self, message, description):
